@@ -1,0 +1,202 @@
+# Verification profile for the Smuz outbound agent.
+#
+# Every assertion here traces to a finding in outbound-agent/AUDIT.md. An
+# assertion that traces to nothing is a check someone invented to look
+# thorough, and it should be deleted rather than justified.
+#
+# Note on independence: the bounds below (daily_cap, cost_ceiling) are set
+# HERE, not read from the agent's .env. That is deliberate. A cap that
+# verifies itself against its own configuration cannot detect a
+# misconfigured cap.
+
+subject = "outbound-agent"
+database = "../../../outbound-agent/outbound.db"
+
+# Where a failed check goes, and who answers it. Without this block the
+# report renders its owner as UNASSIGNED, which is the honest rendering of a
+# check that exits non-zero into a log file nobody opens.
+#
+# Credentials are NOT here and must never be: this file is committed and is
+# shown to prospects. The transport reads RUNPROOF_SMTP_HOST / _PORT / _USER
+# / _PASSWORD from the environment, and their absence is an error, not a
+# silent skip.
+[alert]
+to = "hello@smuz.io"
+owner = "Nick Lysenko <hello@smuz.io>"
+on = "failure"
+
+[schedule]
+at = "09:00"
+tolerance_minutes = 30
+weekdays_only = true
+
+[params]
+dryrun_provider = "dryrun"
+# A send is claimed before the transport call and confirmed after it.
+# 'reserved' and 'sent' both count as contact; 'released' means the transport
+# gave positive evidence of rejection and the slot was freed.
+counted_a = "reserved"
+counted_b = "sent"
+
+# --- Liveness ---------------------------------------------------------------
+
+[[assertion]]
+id = "A1"
+dimension = "liveness"
+description = "A run started inside today's expected window"
+catches = "Cron removed or edited, machine asleep, venv path broken, missing API key"
+provenance = "AUDIT.md F2"
+kind = "scalar"
+uses_schedule = true
+min = 1
+sql = "SELECT COUNT(*) FROM runs WHERE started_at BETWEEN :window_start AND :window_end"
+
+[[assertion]]
+id = "A2"
+dimension = "liveness"
+description = "That run finished and recorded status 'ok'"
+catches = "Crash or mid-run abort leaving a half-completed run"
+provenance = "AUDIT.md F2, F6"
+kind = "scalar"
+uses_schedule = true
+min = 1
+sql = """
+SELECT COUNT(*) FROM runs
+WHERE started_at BETWEEN :window_start AND :window_end
+  AND status = 'ok' AND finished_at IS NOT NULL
+"""
+
+[[assertion]]
+id = "A10"
+dimension = "liveness"
+description = "The most recent successful run is under 26 hours old"
+catches = "Everything above, as a backstop, independent of today's window"
+provenance = "AUDIT.md F2"
+kind = "scalar"
+window_hours = 26
+min = 1
+sql = "SELECT COUNT(*) FROM runs WHERE status = 'ok' AND finished_at >= :since"
+
+# --- Throughput -------------------------------------------------------------
+
+[[assertion]]
+id = "A3"
+dimension = "throughput"
+description = "Today's run discovered at least one lead"
+catches = "Silent no-op: upstream source dead or schema changed, run still exits 0"
+provenance = "AUDIT.md F3"
+kind = "scalar"
+uses_schedule = true
+min = 1
+sql = """
+SELECT COUNT(*) FROM leads WHERE run_id = (
+  SELECT id FROM runs
+  WHERE started_at BETWEEN :window_start AND :window_end
+  ORDER BY id DESC LIMIT 1
+)
+"""
+
+[[assertion]]
+id = "A4"
+dimension = "throughput"
+description = "Every lead a finished run discovered reached a terminal state"
+catches = "Leads vanishing between stages; a run that abandoned work it started"
+provenance = "AUDIT.md F6"
+kind = "no_rows"
+uses_schedule = true
+sql = """
+SELECT l.id, l.company_name, l.status
+FROM leads l JOIN runs r ON l.run_id = r.id
+WHERE r.started_at BETWEEN :window_start AND :window_end
+  AND r.status = 'ok'
+  AND l.status NOT IN ('sent', 'skipped', 'send_failed')
+"""
+
+# --- Effect -----------------------------------------------------------------
+
+[[assertion]]
+id = "A5"
+dimension = "effect"
+description = "Real sends today are within the daily cap"
+catches = "The check-then-act race in the agent's own cap, incl. cron double-firing"
+provenance = "AUDIT.md F4"
+kind = "scalar"
+max = 15
+sql = """
+SELECT COUNT(*) FROM sends
+WHERE substr(sent_at, 1, 10) = :today AND provider != :dryrun_provider
+  AND status IN (:counted_a, :counted_b)
+"""
+
+[[assertion]]
+id = "A6"
+dimension = "effect"
+description = "No run's sends contradict the mode it was started in"
+catches = "Mode confusion: real sends from a rehearsal, or a 'live' run that sent nothing real"
+provenance = "AUDIT.md F1, F6"
+kind = "no_rows"
+sql = """
+SELECT s.id, s.to_email, s.provider, r.dry_run
+FROM sends s JOIN runs r ON s.run_id = r.id
+WHERE s.status IN (:counted_a, :counted_b)
+  AND ((r.dry_run = 1 AND s.provider != :dryrun_provider)
+    OR (r.dry_run = 0 AND s.provider  = :dryrun_provider))
+"""
+
+[[assertion]]
+id = "A7"
+dimension = "effect"
+description = "Every real send today carries a provider message id"
+catches = "Silent transport degradation; bounce and complaint investigation becoming impossible"
+provenance = "AUDIT.md F7"
+kind = "no_rows"
+sql = """
+SELECT id, to_email, provider FROM sends
+WHERE substr(sent_at, 1, 10) = :today
+  AND provider != :dryrun_provider
+  AND status = :counted_b
+  AND (provider_message_id IS NULL OR provider_message_id = '')
+"""
+
+[[assertion]]
+id = "A8"
+dimension = "effect"
+description = "No address has ever been emailed twice"
+catches = "Dedupe regression — the only failure here a recipient can see"
+provenance = "AUDIT.md F1, F8"
+kind = "no_rows"
+sql = """
+SELECT LOWER(to_email) AS email, COUNT(*) AS times
+FROM sends
+WHERE provider != :dryrun_provider AND status IN (:counted_a, :counted_b)
+GROUP BY 1 HAVING times > 1
+"""
+
+[[assertion]]
+id = "A11"
+dimension = "effect"
+description = "No send from a finished run is still awaiting its outcome"
+catches = "The crash window between claiming a send slot and confirming the transport result"
+provenance = "AUDIT.md F8"
+kind = "no_rows"
+sql = """
+SELECT s.id, s.to_email, s.run_id, s.error
+FROM sends s JOIN runs r ON s.run_id = r.id
+WHERE s.status = :counted_a AND r.status IN ('ok', 'error')
+"""
+
+# --- Ownership --------------------------------------------------------------
+
+[[assertion]]
+id = "A9"
+dimension = "ownership"
+description = "Today's run cost stayed under the ceiling"
+catches = "Runaway loop — retrying research against a site that always times out"
+provenance = "AUDIT.md F9"
+kind = "scalar"
+uses_schedule = true
+max = 2.0
+sql = """
+SELECT COALESCE(MAX(cost_usd), 0) FROM runs
+WHERE started_at BETWEEN :window_start AND :window_end
+"""
