@@ -206,6 +206,15 @@ tool tested only against healthy data is worth nothing — the entire point is
 its behaviour on the bad day, and the bad day is the one you cannot rehearse
 in production.
 
+## Where the assertion set comes from
+
+Every assertion in `profiles/outbound.toml` traces to a numbered finding in a
+published audit of the agent it verifies:
+[`smuzstudio/outbound-agent`](https://github.com/smuzstudio/outbound-agent/blob/main/AUDIT.md)
+— nine findings, three of them critical, in the author's own code. An
+assertion that traces to nothing is a check someone invented to look
+thorough.
+
 ## Provenance
 
 See [PROVENANCE.md](PROVENANCE.md). Every file was written from an empty
