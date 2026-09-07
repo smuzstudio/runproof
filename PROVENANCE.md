@@ -18,7 +18,7 @@ sources named below.**
 | `runproof/report.py` | Written from a blank file. The summary-table shape follows `AUDIT.md` §1. |
 | `runproof/alert.py` | Written from a blank file. Standard `smtplib` and `email.message`. The delivery rules (a failed send is fatal and distinctly coded; credentials never in the profile; the path is proven on the good day) were derived from finding F5 of `AUDIT.md`, written by the author about the author's own code. |
 | `runproof/cli.py` | Written from a blank file. Standard `argparse`. |
-| `runproof/profiles/outbound.toml` | Written from a blank file. Each assertion traces to a numbered finding (F1–F9) in `AUDIT.md`, which was produced by reading `outbound-agent`, a repository the author owns outright. |
+| `runproof/profiles/outbound.toml` | Written from a blank file. Each assertion traces to a numbered finding (F1–F10) in `AUDIT.md`, which was produced by reading `outbound-agent`, a repository the author owns outright. A12 added 7 Sep 2026 for F10 (unhonoured opt-outs), from the same source. |
 | `tests/` | Written from a blank file against the schema in this repository. |
 
 ## What this repository deliberately does not contain

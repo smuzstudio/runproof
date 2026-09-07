@@ -34,6 +34,8 @@ CREATE TABLE sends (id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER, to_em
 CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT, finished_at TEXT,
   source TEXT, requested_n INTEGER, dry_run INTEGER, daily_cap INTEGER,
   status TEXT DEFAULT 'running', cost_usd REAL, error TEXT);
+CREATE TABLE suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT, domain TEXT,
+  reason TEXT, source TEXT, note TEXT, active INTEGER DEFAULT 1, created_at TEXT);
 """
 
 # A Monday, so the weekdays_only schedule always applies. Fixing "now" keeps
@@ -52,6 +54,15 @@ class Fixture:
         self.add_lead(1, "acme.com", sent=True)
         self.add_lead(2, "beta.io", sent=True)
         self.add_lead(3, "ceres.dev", sent=False)
+        self.con.commit()
+
+    def suppress(self, *, email=None, domain=None, reason="unsubscribe",
+                 created=None) -> None:
+        self.con.execute(
+            "INSERT INTO suppressions (email, domain, reason, active, created_at)"
+            " VALUES (?, ?, ?, 1, ?)",
+            (email, domain, reason, created or "2026-08-30T09:00:00+00:00"),
+        )
         self.con.commit()
 
     def add_run(self, *, run_id=1, dry_run=0, status="ok", cost=0.42,
@@ -176,6 +187,25 @@ class ProfileTest(unittest.TestCase):
         # The only failure in this set that the recipient can see.
         r = self.run_check(lambda fx: fx.add_send(1, "f1@acme.com", msg_id="dup"))
         self.assert_only_failing(r, {"A8"})
+
+    def test_optout_recorded_but_still_emailed(self):
+        # F10: the footer promises removal. A suppression row that exists while
+        # the sends kept going is that promise being broken, and the recipient
+        # is the one who finds out.
+        r = self.run_check(lambda fx: fx.suppress(email="f1@acme.com"))
+        self.assert_only_failing(r, {"A12"})
+
+    def test_optout_at_one_address_covers_the_domain(self):
+        r = self.run_check(lambda fx: fx.suppress(domain="beta.io"))
+        self.assert_only_failing(r, {"A12"})
+
+    def test_send_before_the_optout_is_not_a_violation(self):
+        # Suppression is not retroactive: it forbids the next email, not the
+        # one that prompted the reply. Without this the assertion would fire
+        # on every honoured opt-out and be turned off within a week.
+        r = self.run_check(lambda fx: fx.suppress(
+            email="f1@acme.com", created="2099-01-01T00:00:00+00:00"))
+        self.assert_only_failing(r, set())
 
     def test_send_left_awaiting_outcome(self):
         # The process died between claiming the slot and confirming the

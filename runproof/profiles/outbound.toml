@@ -185,6 +185,26 @@ FROM sends s JOIN runs r ON s.run_id = r.id
 WHERE s.status = :counted_a AND r.status IN ('ok', 'error')
 """
 
+[[assertion]]
+id = "A12"
+dimension = "effect"
+description = "Nobody who opted out has been emailed since"
+catches = "An opt-out recorded but not honoured — a suppression row that exists while the sends kept going"
+provenance = "AUDIT.md F10"
+kind = "no_rows"
+sql = """
+SELECT s.id, s.to_email, s.sent_at, sup.reason
+FROM sends s
+JOIN leads l ON s.lead_id = l.id
+JOIN suppressions sup
+  ON sup.active = 1
+ AND (LOWER(sup.email) = LOWER(s.to_email)
+      OR (sup.email IS NULL AND LOWER(sup.domain) = LOWER(l.company_domain)))
+WHERE s.provider != :dryrun_provider
+  AND s.status IN (:counted_a, :counted_b)
+  AND s.sent_at > sup.created_at
+"""
+
 # --- Ownership --------------------------------------------------------------
 
 [[assertion]]
